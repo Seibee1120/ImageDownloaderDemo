@@ -3,9 +3,7 @@ using UnityEngine;
 namespace ImageDownloaderDemo
 {
     /// <summary>
-    /// Minimal self-contained MonoBehaviour singleton.
-    /// The original component in the game project depended on a project-wide singleton base
-    /// that pulled in an event bus; this tiny version keeps the demo dependency-free.
+    ///     MonoBehaviour 单例
     /// </summary>
     public abstract class MonoSingleton<T> : MonoBehaviour where T : MonoBehaviour
     {
@@ -28,14 +26,14 @@ namespace ImageDownloaderDemo
 
         public static bool HasInstance => _instance != null;
 
-        /// <summary>When true the singleton survives scene loads (DontDestroyOnLoad).</summary>
+        // 为 true 时，跨场景保留
         protected virtual bool PersistAcrossScenes => true;
 
         protected virtual void Awake()
         {
             if (_instance != null && _instance != this)
             {
-                Debug.LogWarning($"[{typeof(T).Name}] Duplicate instance detected, destroying the new one.");
+                Debug.LogWarning($"[{typeof(T).Name}] 检测到重复实例，销毁新创建的实例。");
                 Destroy(gameObject);
                 return;
             }
@@ -53,14 +51,17 @@ namespace ImageDownloaderDemo
 
         protected virtual void OnApplicationQuit()
         {
-            // Do not lazily create instances while the application is shutting down.
             _quitting = true;
         }
 
-        /// <summary>Called once after the singleton instance is created.</summary>
-        protected virtual void OnInit() { }
+        // 在单例实例创建完成后调用一次。
+        protected virtual void OnInit()
+        {
+        }
 
-        /// <summary>Called when the singleton is destroyed.</summary>
-        protected virtual void OnCleanup() { }
+        // 在单例被销毁时调用。
+        protected virtual void OnCleanup()
+        {
+        }
     }
 }

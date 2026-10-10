@@ -159,7 +159,7 @@ Camera:
   m_Enabled: 1
   serializedVersion: 2
   m_ClearFlags: 1
-  m_BackGroundColor: {r: 0.19215687, g: 0.3019608, b: 0.4745098, a: 0}
+  m_BackGroundColor: {r: 0, g: 0, b: 0, a: 1}
   m_projectionMatrixMode: 1
   m_GateFitMode: 2
   m_FOVAxisMode: 0
@@ -406,9 +406,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ad919200f874c624f8e60bb49b7d67e3, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  imageCount: 40
-  urlSeed: imagedownloader
-  thumbnailSize: 96
+  spawnOwnerOnStart: 1
 --- !u!4 &477165694
 Transform:
   m_ObjectHideFlags: 0

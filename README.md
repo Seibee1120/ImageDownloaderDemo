@@ -1,7 +1,6 @@
 # ImageDownloader (Unity)
 
-A self-contained async remote-image loader for Unity, extracted from a production mobile game
-component and rewritten clean-room as a portfolio demo.
+A async remote-image loader for Unity.
 
 Drop the `Runtime/` folder into any Unity project (2020.3 LTS or newer) and you
 get a dependency-free image downloading service with request de-duplication, an LRU +
@@ -9,7 +8,17 @@ memory-budgeted texture cache, reference counting, owner lifetime binding, bound
 timeout, retry and cancellation.
 
 > Demo is included: open `Demo/`, attach `ImageDownloaderDemo` to any GameObject and press Play.
-> It renders a scrollable gallery with live cache/download statistics and no scene wiring.
+> The controller spawns **two independent owner galleries** and keeps a live cache/download HUD.
+> Both galleries draw from one shared image pool with **deliberately overlapping index ranges**, so a
+> band of URLs is requested by *both* owners at once. That single arrangement exercises the three
+> headline behaviours at a glance:
+>
+> - **Request de-duplication** — the shared URLs are downloaded once and multicast to both galleries.
+> - **Cross-owner reference counting** — a shared texture is retained by *both* owners (refcount 2);
+>   pressing **Destroy A / Destroy B** releases only that gallery's references, so the images still
+>   shown by the surviving gallery stay cached and are never evicted.
+> - **Owner lifetime binding** — destroying an owner drops its in-flight callbacks; the HUD stays
+>   alive so the effect is visible.
 
 ## Features
 
@@ -59,7 +68,8 @@ Assets/
     MonoSingleton.cs                    # minimal self-contained singleton base
     ImageDownloaderDemo.Runtime.asmdef  # assembly: ImageDownloaderDemo.Runtime | namespace: ImageDownloaderDemo | references: []
   Demo/                                 # sample assembly
-    ImageDownloaderDemo.cs              # zero-setup IMGUI gallery
+    ImageDownloaderDemo.cs              # zero-setup IMGUI controller (toolbar + stats + two galleries)
+    ImageDownloaderOwnerPanel.cs        # independent owner that loads one index range of the shared pool
     ImageDownloaderDemo.Demo.asmdef     # assembly: ImageDownloaderDemo.Demo | namespace: ImageDownloaderDemo.Demo | references: [ImageDownloaderDemo.Runtime]
   README.md
 ```
@@ -99,6 +109,6 @@ ships a tiny `MonoSingleton<T>` so the package has **no external dependencies**.
 - 纹理缓存同时受**数量**与**内存预算**约束，采用 **LRU** 淘汰，并用**引用计数**保护正在使用的资源；
 - 通过 owner 生命周期绑定，对象销毁时自动**丢弃回调、释放引用**；
 - 支持**并发上限、超时、重试、取消**；
-- `Demo/` 下附零配置的可视化示例（挂上组件即可运行）。
+- `Demo/` 下附零配置的可视化示例（挂上组件即可运行）：控制器会创建**两个画廊**，它们从同一图片池取图且**索引区间刻意重叠**，于是有一批 URL 被两个 owner 同时请求——可直观看到**去重**（只下载一次）、**跨 owner 引用计数**（单独销毁一个画廊只释放它的引用，共享纹理仍被另一个画廊引用而保留）与 **owner 销毁时丢弃回调/释放引用**。
 
 依赖：仅 Unity（2020.3 LTS+），无第三方包。
