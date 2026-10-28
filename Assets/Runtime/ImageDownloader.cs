@@ -13,41 +13,37 @@ namespace ImageDownloaderDemo
     ///     - LRU 纹理缓存，同时受数量上限和近似内存预算限制。
     ///     - 引用计数防止仍在使用的纹理被逐出。
     ///     - 所有者生命周期绑定：当发起请求的组件被销毁时，其回调会被丢弃，其缓存引用会自动释放。
-    ///     - 有界并发，带待处理队列、超时、重试和取消。
+    ///     - 有界并发，待处理队列、超时、重试和取消。
     /// </summary>
     public class ImageDownloader : MonoSingleton<ImageDownloader>
     {
-        [Header("Download")] [Tooltip("Per-request timeout in seconds. <= 0 disables the manual timeout.")]
+        [Header("下载")] [Tooltip("每条请求的等待时间（秒）。<= 0 时禁用手动超时，可能导致请求永远挂起")]
         public float timeoutSeconds = 30f;
 
-        [Tooltip("Number of retries after the first failure.")]
-        public int maxRetry = 2;
+        [Tooltip("首次请求失败后的重试次数")] public int maxRetry = 2;
 
-        [Tooltip("Delay between retries in seconds.")]
-        public float retryDelaySeconds = 0.5f;
+        [Tooltip("重试间隔")] public float retryDelaySeconds = 0.5f;
 
-        [Tooltip("Maximum number of simultaneous downloads. Must be >= 1.")]
-        public int maxConcurrentDownloads = 8;
+        [Tooltip("最大并发下载数，最小值为 1")] public int maxConcurrentDownloads = 8;
 
-        [Header("Cache")] [Tooltip("Maximum number of cached textures. <= 0 disables the count limit.")]
+        [Header("缓存")] [Tooltip("缓存的纹理数量上限，<= 0 时无上限")]
         public int maxCacheCount = 50;
 
-        [Tooltip("Approximate cache memory budget in bytes. <= 0 disables the memory limit.")]
+        [Tooltip("缓存的纹理内存上限（估值）， <= 0 时无内存上限")]
         public long maxCacheMemoryBytes = 100L * 1024 * 1024;
 
-        [Tooltip("Sort query parameters during URL normalization. Leave OFF for signed URLs (e.g. S3).")]
-        public bool sortQueryParameters;
+        [Tooltip("是否对查询参数排序（对于签名 URL 请保持关闭）")] public bool sortQueryParameters;
 
-        // url -> cached entry
+        // key => 归一化后的 URL，value => 缓存的纹理
         private readonly Dictionary<string, CacheEntry> _cache = new(StringComparer.Ordinal);
 
-        // url -> in-flight (or queued) request
+        // key => 归一化后的 URL，value => 下载中/队列中的请求
         private readonly Dictionary<string, DownloadRequest> _downloading = new(StringComparer.Ordinal);
 
-        // Least-recently-used order: first = most recently used.
+        // LRU 双向链表，最常用的在头部，最久未使用的在尾部
         private readonly LinkedList<string> _lruList = new();
 
-        // url -> total outstanding cache references, summed across all owners.
+        // key => 归一化后的 URL，value => 未释放的缓存引用总数
         private readonly Dictionary<string, int> _refCounts = new(StringComparer.Ordinal);
 
         private readonly Queue<string> _waitQueue = new();
@@ -60,7 +56,7 @@ namespace ImageDownloaderDemo
         }
 
         /// <summary>
-        ///     Called when an owner is destroyed: drop its waiters; cancel downloads nobody needs.
+        ///     引用者被销毁时调用该方法，从请求的等待者列表中将其移除，如果该请求因此没有等待者，移除该请求
         /// </summary>
         private void RemoveWaitersOf(TextureRefTracker tracker)
         {
@@ -83,8 +79,7 @@ namespace ImageDownloaderDemo
         }
 
         /// <summary>
-        ///     Normalize a URL so equivalent addresses share one cache/download slot.
-        ///     Query sorting is opt-in because it corrupts signed URLs.
+        ///     归一化处理 URL
         /// </summary>
         private string NormalizeUrl(string url)
         {
@@ -183,7 +178,7 @@ namespace ImageDownloaderDemo
         }
 
         /// <summary>
-        ///     Cancel every in-flight or queued download.
+        ///     取消所有下载中和队列中的请求
         /// </summary>
         public void CancelAll()
         {
@@ -202,7 +197,7 @@ namespace ImageDownloaderDemo
         }
 
         /// <summary>
-        ///     Destroy and remove every cached texture/sprite.
+        ///     销毁所有缓存
         /// </summary>
         public void ClearCache()
         {
@@ -252,6 +247,15 @@ namespace ImageDownloaderDemo
         public long CacheMemoryBytes { get; private set; }
 
         /// <summary>
+        ///     获取 URL 的引用计数
+        /// </summary>
+        public int GetCacheRefCount(string url)
+        {
+            if (string.IsNullOrEmpty(url)) return 0;
+            return _refCounts.TryGetValue(NormalizeUrl(url), out var count) ? count : 0;
+        }
+
+        /// <summary>
         ///     Number of URLs that are downloading or queued.
         /// </summary>
         public int DownloadingCount => _downloading.Count;
@@ -260,6 +264,64 @@ namespace ImageDownloaderDemo
         ///     Number of downloads actually transferring data right now.
         /// </summary>
         public int ActiveDownloadCount { get; private set; }
+
+        #region 演示用计数器
+
+        /// <summary>
+        ///     正在等待并发槽位的请求数量
+        /// </summary>
+        public int QueuedCount => _waitQueue.Count;
+
+        /// <summary>
+        ///     Current waiting queue in FIFO order (head first), normalized URLs.
+        ///     Cancelled entries that have not been pumped yet are skipped.
+        /// </summary>
+        public string[] GetQueuedUrls()
+        {
+            var result = new List<string>(_waitQueue.Count);
+            foreach (var url in _waitQueue)
+                if (_downloading.TryGetValue(url, out var request) && !request.Cancelled && request.Coroutine == null)
+                    result.Add(url);
+            return result.ToArray();
+        }
+
+        /// <summary>
+        ///     真正开始下载时触发
+        /// </summary>
+        public event Action<string> DownloadStarted;
+
+        /// <summary>
+        ///     总请求数（包括缓存命中的情况）
+        /// </summary>
+        public int TotalRequests { get; private set; }
+
+        /// <summary>
+        ///     缓存命中次数
+        /// </summary>
+        public int TotalCacheHits { get; private set; }
+
+        /// <summary>
+        ///     被合并的请求数
+        /// </summary>
+        public int TotalMergedRequests { get; private set; }
+
+        /// <summary>
+        ///     真正下载的请求数
+        /// </summary>
+        public int TotalDownloadsStarted { get; private set; }
+
+        /// <summary>
+        ///     重置诊断计数器
+        /// </summary>
+        public void ResetStats()
+        {
+            TotalRequests = 0;
+            TotalCacheHits = 0;
+            TotalMergedRequests = 0;
+            TotalDownloadsStarted = 0;
+        }
+
+        #endregion
 
         /// <summary>
         ///     Whether a URL is currently cached.
@@ -278,7 +340,7 @@ namespace ImageDownloaderDemo
         /// </summary>
         private void Request(string url, Component owner, Action<CacheEntry> onResolved, bool forceRefresh)
         {
-            if (string.IsNullOrEmpty(url))
+            if (string.IsNullOrWhiteSpace(url))
             {
                 Debug.LogWarning("[ImageDownloader] URL is null or empty.");
                 InvokeWaiter(new Waiter { OnResolved = onResolved }, null);
@@ -286,6 +348,7 @@ namespace ImageDownloaderDemo
             }
 
             url = NormalizeUrl(url);
+            TotalRequests++;
 
             // 1. Bind the owner's lifetime and register a reference.
             TextureRefTracker tracker = null;
@@ -308,6 +371,7 @@ namespace ImageDownloaderDemo
             // 2. Cache hit -> synchronous callback.
             if (!forceRefresh && _cache.TryGetValue(url, out var entry) && entry.Texture != null)
             {
+                TotalCacheHits++;
                 UpdateLruAccess(entry);
                 InvokeWaiter(waiter, entry);
                 return;
@@ -319,6 +383,7 @@ namespace ImageDownloaderDemo
             // 4. Merge into an existing request, otherwise create one.
             if (_downloading.TryGetValue(url, out var existing) && !existing.Cancelled)
             {
+                TotalMergedRequests++;
                 existing.Waiters.Add(waiter);
                 return;
             }
@@ -334,6 +399,19 @@ namespace ImageDownloaderDemo
         private void StartCoroutineFor(string url, DownloadRequest request)
         {
             ActiveDownloadCount++;
+            TotalDownloadsStarted++;
+
+            // 先发布“拿到槽位”的事件，保证观察者看到的启动顺序与调度顺序一致；
+            // 同时隔离订阅者异常，避免诊断代码影响真正的下载。
+            try
+            {
+                DownloadStarted?.Invoke(url);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[ImageDownloader] DownloadStarted handler threw: {e}");
+            }
+
             request.Coroutine = StartCoroutine(DownloadRoutine(url, request));
         }
 
